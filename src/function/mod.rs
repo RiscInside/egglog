@@ -464,3 +464,42 @@ impl Function {
         !self.decl.unextractable
     }
 }
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Entry<'nodes> {
+    pub inputs: &'nodes [Value],
+    pub output: Value,
+    pub subsumed: bool,
+}
+
+pub struct Entries<'fun> {
+    nodes: &'fun table::Table,
+    include_subsumed: bool,
+}
+
+impl<'fun> Entries<'fun> {
+    pub fn with_subsumed(&mut self) -> &'_ mut Self {
+        self.include_subsumed = true;
+        self
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Entry<'_>> {
+        self.nodes
+            .iter_range(0..self.nodes.num_offsets(), self.include_subsumed)
+            .map(|(_, inputs, output)| Entry {
+                inputs,
+                output: output.value,
+                subsumed: output.subsumed,
+            })
+    }
+}
+
+impl Function {
+    pub fn entries(&self) -> Entries<'_> {
+        Entries {
+            nodes: &self.nodes,
+            include_subsumed: false,
+        }
+    }
+}
