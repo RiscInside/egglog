@@ -379,6 +379,12 @@ pub enum GenericCoreAction<Head, Leaf> {
         GenericAtomTerm<Leaf>,
     ),
     Change(Span, Change, Head, Vec<GenericAtomTerm<Leaf>>),
+    Replace(
+        Span,
+        Head,
+        Vec<GenericAtomTerm<Leaf>>,
+        Vec<Vec<GenericAtomTerm<Leaf>>>,
+    ),
     Union(Span, GenericAtomTerm<Leaf>, GenericAtomTerm<Leaf>),
     Panic(Span, String),
 }
@@ -509,6 +515,51 @@ where
                         *change,
                         CorrespondingVar::new(head.clone(), v),
                         mapped_args,
+                    ));
+                }
+                GenericAction::Replace(span, head, args, rhses) => {
+                    let mut mapped_args = vec![];
+                    for arg in args {
+                        let (actions, mapped_arg) =
+                            arg.to_core_actions(typeinfo, binding, fresh_gen)?;
+                        norm_actions.extend(actions.0);
+                        mapped_args.push(mapped_arg);
+                    }
+
+                    let mut mapped_rhses = vec![];
+                    for rhs in rhses {
+                        let mut mapped_args = vec![];
+                        for arg in rhs {
+                            let (actions, mapped_arg) =
+                                arg.to_core_actions(typeinfo, binding, fresh_gen)?;
+                            norm_actions.extend(actions.0);
+                            mapped_args.push(mapped_arg);
+                        }
+                        mapped_rhses.push(mapped_args);
+                    }
+
+                    norm_actions.push(GenericCoreAction::Replace(
+                        span.clone(),
+                        head.clone(),
+                        mapped_args
+                            .iter()
+                            .map(|e| e.get_corresponding_var_or_lit(typeinfo))
+                            .collect(),
+                        mapped_rhses
+                            .iter()
+                            .map(|rhs| {
+                                rhs.iter()
+                                    .map(|e| e.get_corresponding_var_or_lit(typeinfo))
+                                    .collect()
+                            })
+                            .collect(),
+                    ));
+                    let v = fresh_gen.fresh(head);
+                    mapped_actions.0.push(GenericAction::Replace(
+                        span.clone(),
+                        CorrespondingVar::new(head.clone(), v),
+                        mapped_args,
+                        mapped_rhses,
                     ));
                 }
                 GenericAction::Union(span, e1, e2) => {

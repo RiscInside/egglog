@@ -269,7 +269,12 @@ impl<Head: Display, Leaf: Display> Display for GenericSchedule<Head, Leaf> {
 
 pub type Command = GenericCommand<Symbol, Symbol>;
 
-pub type Subsume = bool;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteKind {
+    Plain,
+    Subsuming,
+    Replacing,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subdatatypes {
@@ -532,7 +537,7 @@ where
     ///       ((union lhs (bitshift-left a 1))
     ///        (subsume (Mul a 2))))
     /// ```
-    Rewrite(Symbol, GenericRewrite<Head, Leaf>, Subsume),
+    Rewrite(Symbol, GenericRewrite<Head, Leaf>, RewriteKind),
     /// Similar to [`Command::Rewrite`], but
     /// generates two rules, one for each direction.
     ///
@@ -674,11 +679,11 @@ where
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             GenericCommand::SetOption { name, value } => write!(f, "(set-option {name} {value})"),
-            GenericCommand::Rewrite(name, rewrite, subsume) => {
-                rewrite.fmt_with_ruleset(f, *name, false, *subsume)
+            GenericCommand::Rewrite(name, rewrite, rewrite_kind) => {
+                rewrite.fmt_with_ruleset(f, *name, false, *rewrite_kind)
             }
             GenericCommand::BiRewrite(name, rewrite) => {
-                rewrite.fmt_with_ruleset(f, *name, true, false)
+                rewrite.fmt_with_ruleset(f, *name, true, RewriteKind::Plain)
             }
             GenericCommand::Datatype {
                 span: _,
@@ -1210,6 +1215,13 @@ where
     ),
     /// Delete or subsume (mark as hidden from future rewrites and unextractable) an entry from a function.
     Change(Span, Change, Head, Vec<GenericExpr<Head, Leaf>>),
+    /// Subsume an entry from a function if it conincides with one of the following expressions.
+    Replace(
+        Span,
+        Head,
+        Vec<GenericExpr<Head, Leaf>>,
+        Vec<Vec<GenericExpr<Head, Leaf>>>,
+    ),
     /// `union` two datatypes, making them equal
     /// in the implicit, global equality relation
     /// of egglog.
@@ -1296,6 +1308,20 @@ where
                 };
                 write!(f, "({change} ({lhs} {}))", ListDisplay(args, " "))
             }
+            GenericAction::Replace(_ann, head, args, rhses) => {
+                // There is probably a better way to do this
+                let rhses = rhses
+                    .iter()
+                    .map(|rhs| GenericExpr::Call(Span::Panic, head.clone(), rhs.clone()))
+                    .collect::<Vec<_>>();
+
+                write!(
+                    f,
+                    "(replace ({head} {}) {})",
+                    ListDisplay(args, " "),
+                    ListDisplay(rhses, " ")
+                )
+            }
             GenericAction::Extract(_ann, expr, variants) => {
                 write!(f, "(extract {expr} {variants})")
             }
@@ -1334,6 +1360,14 @@ where
                 lhs.clone(),
                 args.iter().map(f).collect(),
             ),
+            GenericAction::Replace(span, head, args, rhses) => {
+                let args = args.iter().map(|e| f(e)).collect();
+                let rhses = rhses
+                    .iter()
+                    .map(|rhs| rhs.iter().map(|e| f(e)).collect())
+                    .collect();
+                GenericAction::Replace(span.clone(), head.clone(), args, rhses)
+            }
             GenericAction::Union(span, lhs, rhs) => {
                 GenericAction::Union(span.clone(), f(lhs), f(rhs))
             }
@@ -1355,9 +1389,6 @@ where
             GenericAction::Let(span, lhs, rhs) => {
                 GenericAction::Let(span, lhs.clone(), rhs.visit_exprs(f))
             }
-            // TODO should we refactor `Set` so that we can map over Expr::Call(lhs, args)?
-            // This seems more natural to oflatt
-            // Currently, visit_exprs does not apply f to the first argument of Set.
             GenericAction::Set(span, lhs, args, rhs) => {
                 let args = args.into_iter().map(|e| e.visit_exprs(f)).collect();
                 GenericAction::Set(span, lhs.clone(), args, rhs.visit_exprs(f))
@@ -1366,6 +1397,15 @@ where
                 let args = args.into_iter().map(|e| e.visit_exprs(f)).collect();
                 GenericAction::Change(span, change, lhs.clone(), args)
             }
+            GenericAction::Replace(span, head, args, rhses) => GenericAction::Replace(
+                span,
+                head,
+                args.into_iter().map(|e| e.visit_exprs(f)).collect(),
+                rhses
+                    .into_iter()
+                    .map(|rhs| rhs.into_iter().map(|e| e.visit_exprs(f)).collect())
+                    .collect(),
+            ),
             GenericAction::Union(span, lhs, rhs) => {
                 GenericAction::Union(span, lhs.visit_exprs(f), rhs.visit_exprs(f))
             }
@@ -1407,6 +1447,21 @@ where
                     .map(|e| e.subst_leaf(&mut fvar_expr!()))
                     .collect();
                 GenericAction::Change(span, change, lhs.clone(), args)
+            }
+            GenericAction::Replace(span, f, args, rhses) => {
+                let args = args
+                    .into_iter()
+                    .map(|e| e.subst_leaf(&mut fvar_expr!()))
+                    .collect();
+                let rhses = rhses
+                    .into_iter()
+                    .map(|rhs| {
+                        rhs.into_iter()
+                            .map(|e| e.subst_leaf(&mut fvar_expr!()))
+                            .collect()
+                    })
+                    .collect();
+                GenericAction::Replace(span, f, args, rhses)
             }
             GenericAction::Union(span, lhs, rhs) => {
                 let lhs = lhs.subst_leaf(&mut fvar_expr!());
@@ -1533,7 +1588,7 @@ impl<Head: Display, Leaf: Display> GenericRewrite<Head, Leaf> {
         f: &mut Formatter,
         ruleset: Symbol,
         is_bidirectional: bool,
-        subsume: bool,
+        rewrite_kind: RewriteKind,
     ) -> std::fmt::Result {
         let direction = if is_bidirectional {
             "birewrite"
@@ -1541,8 +1596,10 @@ impl<Head: Display, Leaf: Display> GenericRewrite<Head, Leaf> {
             "rewrite"
         };
         write!(f, "({direction} {} {}", self.lhs, self.rhs)?;
-        if subsume {
-            write!(f, " :subsume")?;
+        match rewrite_kind {
+            RewriteKind::Plain => {}
+            RewriteKind::Subsuming => write!(f, " :subsume")?,
+            RewriteKind::Replacing => write!(f, " :replace")?,
         }
         if !self.conditions.is_empty() {
             write!(f, " :when ({})", ListDisplay(&self.conditions, " "))?;

@@ -1,0 +1,28 @@
+(sort V)
+(constructor True () V)
+(constructor And (V V) V)
+(constructor E1 () V)
+(constructor E2 () V)
+(constructor E3 () V)
+
+(union (E1) (And (E2) (E3)))
+(union (E2) (And (E1) (E2)))
+(union (E3) (And (E1) (E3)))
+(union (E1) (True))
+
+(ruleset trueprop)
+(rule ((= (True) (And a b))) ((union (True) a) (union (True) b)
+      (subsume (And a b))) :ruleset trueprop)
+
+(ruleset aig)
+(rewrite (And (And a b) (And a c)) (And (And a b) c) :replace :ruleset aig) ; note new modifier
+
+(push)
+(run-schedule (run trueprop))
+(check (= (E2) (True)))
+(check (= (E3) (True)))
+
+(pop)
+(run-schedule (run aig) (run trueprop))
+(check (= (E2) (True)))
+(check (= (E3) (True)))

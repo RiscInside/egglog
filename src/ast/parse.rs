@@ -455,11 +455,28 @@ impl Parser {
 
                     let mut ruleset = "".into();
                     let mut conditions = Vec::new();
-                    let mut subsume = false;
+                    let mut rewrite_kind = RewriteKind::Plain;
                     for option in self.parse_options(rest)? {
                         match option {
                             (":ruleset", [r]) => ruleset = r.expect_atom("ruleset name")?,
-                            (":subsume", []) => subsume = true,
+                            (":subsume", []) => {
+                                if rewrite_kind != RewriteKind::Plain {
+                                    return error!(
+                                        span,
+                                        "rewrite kind (subsuming/replacing) already specified"
+                                    );
+                                }
+                                rewrite_kind = RewriteKind::Subsuming;
+                            }
+                            (":replace", []) => {
+                                if rewrite_kind != RewriteKind::Plain {
+                                    return error!(
+                                        span,
+                                        "rewrite kind (subsuming/replacing) already specified"
+                                    );
+                                }
+                                rewrite_kind = RewriteKind::Replacing;
+                            }
                             (":when", [w]) => {
                                 conditions = map_fallible(
                                     w.expect_list("rewrite conditions")?,
@@ -479,7 +496,7 @@ impl Parser {
                             rhs,
                             conditions,
                         },
-                        subsume,
+                        rewrite_kind,
                     )]
                 }
                 _ => return error!(span, "usage: (rewrite <expr> <expr> <option>*)"),
@@ -753,6 +770,30 @@ impl Parser {
                     vec![Action::Change(span, Change::Subsume, func, args)]
                 }
                 _ => return error!(span, "usage: (subsume (<table name> <expr>*))"),
+            },
+            "replace" => match tail {
+                [call, rhses @ ..] => {
+                    let (func, args, _) = call.expect_call("table lookup")?;
+                    let args = map_fallible(args, self, Self::parse_expr)?;
+                    let rhses = map_fallible(rhses, self, |parser, sexp| {
+                        let (rhs_func, rhs_args, rhs_span) = sexp.expect_call("table lookup")?;
+                        if rhs_func != func {
+                            return error!(
+                                rhs_span,
+                                "expected table lookup in {func} for replace (got {rhs_func})"
+                            );
+                        }
+                        map_fallible(rhs_args, parser, Self::parse_expr)
+                    })?;
+
+                    vec![Action::Replace(span, func, args, rhses)]
+                }
+                _ => {
+                    return error!(
+                        span,
+                        "usage: (replace (<table name> <expr>*) (<table name> <expr>*)*)"
+                    )
+                }
             },
             "union" => match tail {
                 [e1, e2] => vec![Action::Union(

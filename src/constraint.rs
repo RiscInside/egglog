@@ -517,6 +517,30 @@ impl Assignment<AtomTerm, ArcSort> {
                     children.clone(),
                 ))
             }
+            GenericAction::Replace(span, CorrespondingVar { head, to: _ }, args, rhses) => {
+                let args: Vec<_> = args
+                    .iter()
+                    .map(|arg| self.annotate_expr(arg, typeinfo))
+                    .collect();
+                let types: Vec<_> = args.iter().map(|child| child.output_type()).collect();
+                let resolved_call =
+                    ResolvedCall::from_resolution_func_types(head, &types, typeinfo)
+                        .ok_or_else(|| TypeError::UnboundFunction(*head, span.clone()))?;
+                let rhses: Vec<_> = rhses
+                    .iter()
+                    .map(|rhs| {
+                        rhs.iter()
+                            .map(|expr| self.annotate_expr(expr, typeinfo))
+                            .collect()
+                    })
+                    .collect();
+                Ok(ResolvedAction::Replace(
+                    span.clone(),
+                    resolved_call,
+                    args,
+                    rhses,
+                ))
+            }
             GenericAction::Union(span, lhs, rhs) => Ok(ResolvedAction::Union(
                 span.clone(),
                 self.annotate_expr(lhs, typeinfo),
@@ -679,6 +703,23 @@ impl CoreAction {
                         head, &args, span, typeinfo,
                     )?)
                     .collect())
+            }
+            CoreAction::Replace(span, head, lhs_args, rhses) => {
+                // Add a dummy last output argument
+                let var = symbol_gen.fresh(head);
+                let mut constraints = vec![];
+
+                for args in std::iter::once((&lhs_args) as &[AtomTerm])
+                    .chain(rhses.iter().map(|v| v as &[AtomTerm]))
+                {
+                    let mut args = args.to_owned();
+                    args.push(AtomTerm::Var(span.clone(), var));
+                    constraints.extend(get_literal_and_global_constraints(&args, typeinfo).chain(
+                        get_atom_application_constraints(head, &args, span, typeinfo)?,
+                    ));
+                }
+
+                Ok(constraints)
             }
             CoreAction::Union(_ann, lhs, rhs) => Ok(get_literal_and_global_constraints(
                 &[lhs.clone(), rhs.clone()],

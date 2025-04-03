@@ -443,6 +443,12 @@ impl TypeInfo {
                     }
                     Ok(())
                 }
+                GenericAction::Replace(_, _, args, rhses) => {
+                    for arg in args.iter().chain(rhses.iter().flatten()) {
+                        Self::check_lookup_expr(arg)?
+                    }
+                    Ok(())
+                }
                 GenericAction::Extract(_, expr, variants) => {
                     Self::check_lookup_expr(expr)?;
                     Self::check_lookup_expr(variants)

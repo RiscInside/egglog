@@ -49,6 +49,17 @@ impl<'a> ActionCompiler<'a> {
                 self.instructions
                     .push(Instruction::Change(*change, func.name));
             }
+            GenericCoreAction::Replace(_, f, lhs_args, rhses) => {
+                let ResolvedCall::Func(func) = f else {
+                    panic!("Cannot replace primitive - should have been caught by typechecking!!!")
+                };
+
+                for arg in lhs_args.iter().chain(rhses.iter().flatten()) {
+                    self.do_atom_term(arg);
+                }
+                self.instructions
+                    .push(Instruction::Replace(rhses.len(), func.name));
+            }
             GenericCoreAction::Union(_ann, arg1, arg2) => {
                 let sort = self.do_atom_term(arg1);
                 self.do_atom_term(arg2);
@@ -125,6 +136,9 @@ enum Instruction {
     /// Pop function arguments off the stack and either deletes or subsumes the corresponding row
     /// in the function.
     Change(Change, Symbol),
+    /// Pop (1 + n) function argument sets off the stack. If first set of arguments matches any
+    /// other, do nothing, otherwise subsume the corresponding row in the function.
+    Replace(usize, Symbol),
     /// Pop the value to be set and the function arguments off the stack.
     /// Set the function at the given arguments to the new value.
     Set(Symbol),
@@ -248,6 +262,27 @@ impl EGraph {
         subst: &[Value],
         program: &Program,
     ) -> Result<(), Error> {
+        fn subsume_enode(
+            function: &mut Function,
+            unionfind: &mut UnionFind,
+            inputs: &[Value],
+            ts: u32,
+        ) -> Result<(), Error> {
+            if function.decl.subtype != FunctionSubtype::Constructor
+                && function.decl.subtype != FunctionSubtype::Relation
+            {
+                return Err(Error::SubsumeMergeError(function.decl.name));
+            }
+            function.nodes.insert_and_merge(inputs, ts, true, |old| {
+                old.unwrap_or_else(|| Value {
+                    #[cfg(debug_assertions)]
+                    tag: function.schema.output.name(),
+                    bits: unionfind.make_set(),
+                })
+            });
+            Ok(())
+        }
+
         for instr in &program.0 {
             match instr {
                 Instruction::Load(load) => match load {
@@ -392,21 +427,22 @@ impl EGraph {
                             function.remove(args, self.timestamp);
                         }
                         Change::Subsume => {
-                            if function.decl.subtype != FunctionSubtype::Constructor
-                                && function.decl.subtype != FunctionSubtype::Relation
-                            {
-                                return Err(Error::SubsumeMergeError(*f));
-                            }
-                            function
-                                .nodes
-                                .insert_and_merge(args, self.timestamp, true, |old| {
-                                    old.unwrap_or_else(|| Value {
-                                        #[cfg(debug_assertions)]
-                                        tag: function.schema.output.name(),
-                                        bits: self.unionfind.make_set(),
-                                    })
-                                });
+                            subsume_enode(function, &mut self.unionfind, args, self.timestamp)?;
                         }
+                    }
+                    stack.truncate(new_len);
+                }
+                Instruction::Replace(alias_checks_count, f) => {
+                    let function = self.functions.get_mut(f).unwrap();
+                    let arity = function.schema.input.len();
+                    let rhses_end = stack.len() - *alias_checks_count * arity;
+
+                    let (rest, rhses) = stack.split_at(rhses_end);
+                    let new_len = rhses_end - arity;
+                    let lhs_args = &rest[new_len..];
+
+                    if rhses.chunks(arity).all(|rhs_args| rhs_args != lhs_args) {
+                        subsume_enode(function, &mut self.unionfind, lhs_args, self.timestamp)?;
                     }
                     stack.truncate(new_len);
                 }

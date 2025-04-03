@@ -102,8 +102,8 @@ pub(crate) fn desugar_command(
 
             res
         }
-        Command::Rewrite(ruleset, ref rewrite, subsume) => {
-            desugar_rewrite(ruleset, rule_name(&command), rewrite, subsume)
+        Command::Rewrite(ruleset, ref rewrite, rewrite_kind) => {
+            desugar_rewrite(ruleset, rule_name(&command), rewrite, rewrite_kind)
         }
         Command::BiRewrite(ruleset, ref rewrite) => {
             desugar_birewrite(ruleset, rule_name(&command), rewrite)
@@ -254,7 +254,7 @@ fn desugar_rewrite(
     ruleset: Symbol,
     name: Symbol,
     rewrite: &Rewrite,
-    subsume: bool,
+    rewrite_kind: RewriteKind,
 ) -> Vec<NCommand> {
     let span = rewrite.span.clone();
     let var = Symbol::from("rewrite_var__");
@@ -263,8 +263,10 @@ fn desugar_rewrite(
         Expr::Var(span.clone(), var),
         rewrite.rhs.clone(),
     ));
-    if subsume {
-        match &rewrite.lhs {
+
+    match rewrite_kind {
+        RewriteKind::Plain => {}
+        RewriteKind::Subsuming => match &rewrite.lhs {
             Expr::Call(_, f, args) => {
                 head.0.push(Action::Change(
                     span.clone(),
@@ -275,6 +277,21 @@ fn desugar_rewrite(
             }
             _ => {
                 panic!("Subsumed rewrite must have a function call on the lhs");
+            }
+        },
+        RewriteKind::Replacing => {
+            let Expr::Call(_, lhs_f, lhs_args) = &rewrite.lhs else {
+                panic!("Replacing rewrite must have a function call on the lhs");
+            };
+            if let Expr::Call(_, rhs_f, rhs_args) = &rewrite.rhs {
+                if lhs_f == rhs_f {
+                    head.0.push(Action::Replace(
+                        span.clone(),
+                        lhs_f.clone(),
+                        lhs_args.clone(),
+                        vec![rhs_args.clone()],
+                    ));
+                }
             }
         }
     }
@@ -307,15 +324,20 @@ fn desugar_birewrite(ruleset: Symbol, name: Symbol, rewrite: &Rewrite) -> Vec<NC
         rhs: rewrite.lhs.clone(),
         conditions: rewrite.conditions.clone(),
     };
-    desugar_rewrite(ruleset, format!("{}=>", name).into(), rewrite, false)
-        .into_iter()
-        .chain(desugar_rewrite(
-            ruleset,
-            format!("{}<=", name).into(),
-            &rw2,
-            false,
-        ))
-        .collect()
+    desugar_rewrite(
+        ruleset,
+        format!("{}=>", name).into(),
+        rewrite,
+        RewriteKind::Plain,
+    )
+    .into_iter()
+    .chain(desugar_rewrite(
+        ruleset,
+        format!("{}<=", name).into(),
+        &rw2,
+        RewriteKind::Plain,
+    ))
+    .collect()
 }
 
 fn desugar_simplify(
