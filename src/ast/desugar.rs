@@ -291,6 +291,13 @@ fn desugar_rewrite(
                         lhs_args.clone(),
                         vec![rhs_args.clone()],
                     ));
+                } else {
+                    head.0.push(Action::Change(
+                        span.clone(),
+                        Change::Subsume,
+                        lhs_f.clone(),
+                        lhs_args.clone(),
+                    ));
                 }
             }
         }
