@@ -114,6 +114,9 @@ impl UnionFind {
         let id1 = self.find(id1);
         let id2 = self.find(id2);
         if id1 != id2 {
+            // Enforce rounding down
+            let (id1, id2) = (std::cmp::min(id1, id2), std::cmp::max(id1, id2));
+
             self.parent(id2).set(id1);
             self.n_unions += 1;
             (id1, Some(id2))
