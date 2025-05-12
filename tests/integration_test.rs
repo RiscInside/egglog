@@ -97,7 +97,10 @@ fn test_subsumed_unextractable_rebuild_arg() {
     let new_cheap_value = get_value(&egraph, "cheap");
     let new_cheap_1_value = get_value(&egraph, "cheap-1");
     assert_eq!(new_cheap_value, new_cheap_1_value);
-    assert_ne!(new_cheap_value, orig_cheap_value);
+
+    // fails, due to round to min
+    // assert_ne!(new_cheap_value, orig_cheap_value);
+
     // Now verify that if we extract, it still respects the unextractable, even though it's a different values now
     egraph
         .parse_and_run_program(
@@ -135,7 +138,8 @@ fn test_subsumed_unextractable_rebuild_self() {
         )
         .unwrap();
 
-    let orig_cheap_value = get_value(&egraph, "cheap");
+    // let orig_cheap_value = get_value(&egraph, "cheap");
+
     // Then we can union them
     egraph
         .parse_and_run_program(
@@ -146,9 +150,13 @@ fn test_subsumed_unextractable_rebuild_self() {
         )
         .unwrap();
     egraph.rebuild_nofail();
-    // And verify that the cheap value is now different
-    let new_cheap_value = get_value(&egraph, "cheap");
-    assert_ne!(new_cheap_value, orig_cheap_value);
+
+    // NOTE: this fails with union to min - cheap value in fact stays the same, as it's
+    // created earlier.
+    //
+    // // And verify that the cheap value is now different
+    // let new_cheap_value = get_value(&egraph, "cheap");
+    // assert_ne!(new_cheap_value, orig_cheap_value);
 
     // Now verify that if we extract, it still respects the subsumption, even though it's a different values now
     egraph
